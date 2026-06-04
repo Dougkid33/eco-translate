@@ -1,0 +1,26 @@
+{
+    "mcpServers": {
+      "context7": {
+        "httpUrl": "https://mcp.context7.com/mcp",
+        "timeout": 30000,
+        "trust": false
+      },
+      "filesystem-ecotranslate": {
+        "command": "bunx",
+        "args": [
+          "@modelcontextprotocol/server-filesystem",
+          "/home/user/Área de trabalho/Projetos Node/econtranslate-app"
+        ],
+        "timeout": 30000,
+        "trust": false
+      },
+      "playwright": {
+        "command": "bunx",
+        "args": [
+          "@playwright/mcp@latest"
+        ],
+        "timeout": 30000,
+        "trust": false
+      }
+    }
+  }

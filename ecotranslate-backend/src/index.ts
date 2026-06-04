@@ -9,7 +9,11 @@ import { TranslationController } from './infrastructure/web/TranslationControlle
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+
+// 👇 Substitua a linha antiga por estas duas linhas abaixo:
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// 👆 --------------------------------------------------------
 
 // 2. Montagem do quebra-cabeça Hexagonal (Injeção de Dependência)
 const geminiAdapter = new GeminiAdapter(); // Infra

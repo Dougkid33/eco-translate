@@ -1,128 +1,173 @@
 // App.tsx
-import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, Dimensions } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import Tesseract from 'tesseract.js';
+import * as ImageManipulator from 'expo-image-manipulator';
 import axios from 'axios';
+
+// Mapeamento de Bandeiras
+const getFlagEmoji = (language: string) => {
+  if (!language) return '🏳️';
+  const lower = language.toLowerCase();
+  if (lower.includes('inglês') || lower.includes('english')) return '🇺🇸';
+  if (lower.includes('português') || lower.includes('portuguese')) return '🇧🇷';
+  if (lower.includes('espanhol') || lower.includes('spanish')) return '🇪🇸';
+  if (lower.includes('japonês') || lower.includes('japanese')) return '🇯🇵';
+  if (lower.includes('francês') || lower.includes('french')) return '🇫🇷';
+  if (lower.includes('alemão') || lower.includes('german')) return '🇩🇪';
+  if (lower.includes('italiano') || lower.includes('italian')) return '🇮🇹';
+  return '🏳️';
+};
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
+
   const [isScanning, setIsScanning] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [statusText, setStatusText] = useState('');
+  const [statusText, setStatusText] = useState('Inicializando câmera...');
   const [translationResult, setTranslationResult] = useState<any>(null);
-  
-  const cameraRef = useRef<any>(null);
-  const intervalRef = useRef<any>(null);
 
-  // Solicita permissão da câmera assim que o app abre
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
+
+  const cameraRef = useRef<CameraView | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadingRef = useRef(false);
+
+  // Verifique seu IP local caso a rede Wi-Fi mude
+  const backendUrl = 'http://192.168.100.12:3000/api/translate';
+
+  const clearResult = useCallback(() => {
+    setTranslationResult(null);
+  }, []);
+
+  const clearScanInterval = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const stopScanning = useCallback(() => {
+    clearScanInterval();
+    loadingRef.current = false;
+    setIsScanning(false);
+    setLoading(false);
+    setStatusText(cameraReady ? 'Câmera pronta.' : 'Inicializando câmera...');
+  }, [clearScanInterval, cameraReady]);
+
   useEffect(() => {
     if (!permission?.granted) {
       requestPermission();
     }
-    return () => stopScanning(); // Limpa o intervalo se o app fechar
-  }, [permission]);
+    return () => clearScanInterval();
+  }, [permission?.granted, requestPermission, clearScanInterval]);
 
-  // Liga/Desliga o Scanner em tempo real
-  const toggleScanning = () => {
-    if (isScanning) {
-      stopScanning();
-    } else {
-      startScanning();
-    }
-  };
-
-  const startScanning = () => {
-    setIsScanning(true);
-    setTranslationResult(null);
-    setStatusText('Scanner ativo. Mirando no texto...');
-    
-    // Loop: Tira um snapshot a cada 3 segundos para processar o OCR
-    intervalRef.current = setInterval(() => {
-      captureFrame();
-    }, 3000);
-  };
-
-  const stopScanning = () => {
+  const restartCamera = useCallback(() => {
+    clearScanInterval();
+    loadingRef.current = false;
     setIsScanning(false);
     setLoading(false);
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-    }
-  };
+    setCameraReady(false);
+    setTranslationResult(null);
+    setStatusText('Reinicializando câmera...');
+    setCameraKey((prev) => prev + 1);
+  }, [clearScanInterval]);
 
-  // Captura o frame atual da tela da câmera de forma silenciosa
-  const captureFrame = async () => {
-    if (cameraRef.current && !loading) {
-      try {
-        setLoading(true);
-        setStatusText('Capturando imagem...');
-        
-        const photo = await cameraRef.current.takePictureAsync({
-          quality: 0.5, // Qualidade menor para o OCR processar mais rápido
-          skipProcessing: true, // Pula pós-processamentos pesados
-        });
-
-        if (photo?.uri) {
-          processFrameOCR(photo.uri);
-        } else {
-          setLoading(false);
-        }
-      } catch (error) {
-        console.error("Erro ao capturar frame:", error);
-        setLoading(false);
-      }
-    }
-  };
-
-  // Executa o OCR local no frame capturado
-  const processFrameOCR = async (uri: string) => {
-    setStatusText('Processando OCR local...');
+  const sendToBackend = useCallback(async (base64Image: string) => {
+    setStatusText('Gemini analisando imagem...');
     try {
-      const { data: { text } } = await Tesseract.recognize(uri, 'eng');
-      
-      if (!text || text.trim().length < 4) {
-        // Se o texto for muito curto ou ilegível, ignora esse frame e espera o próximo
-        setLoading(false);
-        setStatusText('Mirando... Alinhe o texto na tela.');
+      const response = await axios.post(
+        backendUrl,
+        { text: base64Image, targetLanguage: 'Português' },
+        { timeout: 30000 }
+      );
+      if (response.data) {
+        setTranslationResult(response.data);
+      }
+    } catch (error) {
+      console.error('Erro no Axios:', error);
+      setStatusText('Erro de conexão com o servidor.');
+    }
+  }, []);
+
+  const captureFrame = useCallback(async () => {
+    if (!cameraRef.current || !cameraReady || loadingRef.current) return;
+
+    try {
+      loadingRef.current = true;
+      setLoading(true);
+      setStatusText('Capturando...');
+
+      // Captura leve e rápida no Realme
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.4,
+        base64: true,
+        skipProcessing: true,
+      });
+
+      if (!photo?.base64 || !photo?.uri) {
+        setStatusText('Nenhuma imagem capturada.');
         return;
       }
 
-      setStatusText('Texto encontrado! Traduzindo com Gemini...');
-      sendToBackend(text);
+      // Compressão extrema (Reduz payload e acelera Wi-Fi)
+      const compressedImage = await ImageManipulator.manipulateAsync(
+        photo.uri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+
+      if (compressedImage.base64) {
+        await sendToBackend(compressedImage.base64);
+        setStatusText('Tradução atualizada.');
+      }
     } catch (error) {
-      console.error("Erro no OCR:", error);
-      setLoading(false);
-    }
-  };
-
-  // Dispara a string capturada para o seu backend hexagonal
-  const sendToBackend = async (extractedText: string) => {
-    try {
-      // LEMBRE-SE: Mude para o IP da sua máquina se rodar no celular físico!
-      const backendUrl = 'http://10.0.2.2:3000/api/translate'; 
-
-      const response = await axios.post(backendUrl, {
-        text: extractedText,
-        targetLanguage: 'Português'
-      });
-
-      setTranslationResult(response.data);
-    } catch (error) {
-      console.error("Erro no backend:", error);
+      console.error('Erro na captura:', error);
+      setStatusText('Erro ao capturar imagem.');
     } finally {
+      loadingRef.current = false;
       setLoading(false);
     }
-  };
+  }, [cameraReady, sendToBackend]);
+
+  const startScanning = useCallback(() => {
+    if (!cameraReady) {
+      setStatusText('Aguarde a câmera...');
+      return;
+    }
+    setIsScanning(true);
+    setTranslationResult(null);
+    setStatusText('Scanner ativo. Mirando...');
+    clearScanInterval();
+    captureFrame();
+    intervalRef.current = setInterval(() => captureFrame(), 5000);
+  }, [cameraReady, captureFrame, clearScanInterval]);
+
+  const toggleScanning = useCallback(() => {
+    if (isScanning) stopScanning();
+    else startScanning();
+  }, [isScanning, startScanning, stopScanning]);
 
   if (!permission) {
-    return <View style={styles.center}><ActivityIndicator size="large" /></View>;
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#007AFF" />
+      </View>
+    );
   }
 
   if (!permission.granted) {
     return (
       <View style={styles.center}>
-        <Text style={{ textAlign: 'center', marginBottom: 20 }}>Precisamos da sua permissão para usar a câmera!</Text>
+        <Text style={styles.permissionText}>Precisamos da permissão da câmera!</Text>
         <TouchableOpacity style={styles.button} onPress={requestPermission}>
           <Text style={styles.buttonText}>Liberar Câmera</Text>
         </TouchableOpacity>
@@ -132,42 +177,87 @@ export default function App() {
 
   return (
     <View style={styles.container}>
-      {/* Componente nativo de Câmera do Expo */}
-      <CameraView style={styles.camera} ref={cameraRef}>
-        <View style={styles.overlayContainer}>
+      {/* Câmera Responsiva (Sem altura fixa) */}
+      <View style={styles.cameraContainer}>
+        <CameraView
+          key={cameraKey}
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+          mode="picture"
+          onCameraReady={() => {
+            setCameraReady(true);
+            setStatusText('Câmera pronta.');
+          }}
+          onMountError={(e: any) => {
+            setCameraReady(false);
+            setStatusText(`Erro nativo: ${e?.message}`);
+          }}
+        />
+        <View pointerEvents="none" style={styles.overlayContainer}>
           <View style={styles.scanTargetBox} />
-          <Text style={styles.overlayInstruction}>Posicione o texto em inglês dentro do quadrado</Text>
+          <Text style={styles.overlayInstruction}>Posicione o texto no quadrado</Text>
         </View>
-      </CameraView>
+      </View>
 
-      {/* Painel de Controle Inferior */}
+      {/* Painel Inferior Premium */}
       <View style={styles.controlPanel}>
-        <TouchableOpacity 
-          style={[styles.button, isScanning ? styles.buttonStop : styles.buttonStart]} 
-          onPress={toggleScanning}
-        >
-          <Text style={styles.buttonText}>
-            {isScanning ? '⏹️ Parar Tradutor' : '🚀 Traduzir em Tempo Real'}
-          </Text>
-        </TouchableOpacity>
+        <View style={styles.buttonRow}>
+          <TouchableOpacity
+            style={[styles.button, styles.buttonMain, isScanning ? styles.buttonStop : styles.buttonStart, !cameraReady && styles.buttonDisabled]}
+            onPress={toggleScanning}
+            disabled={!cameraReady}
+          >
+            <Text style={styles.buttonText}>
+              {!cameraReady ? 'Inicializando...' : isScanning ? '⏹️ Parar' : '🚀 Traduzir Realtime'}
+            </Text>
+          </TouchableOpacity>
 
-        {loading && (
+          <TouchableOpacity style={[styles.button, styles.buttonSecondary]} onPress={restartCamera}>
+            <Text style={styles.buttonTextSecondary}>🔄 Reset Cam</Text>
+          </TouchableOpacity>
+        </View>
+
+        {(loading || statusText !== '') && (
           <View style={styles.loaderInline}>
-            <ActivityIndicator size="small" color="#007AFF" />
-            <Text style={styles.statusText}> {statusText}</Text>
+            {loading && <ActivityIndicator size="small" color="#007AFF" style={{ marginRight: 8 }} />}
+            <Text style={styles.statusText}>{statusText}</Text>
           </View>
         )}
 
+        {/* Cartão de Resultado com Botão Limpar e Bandeiras */}
         {translationResult && (
           <View style={styles.resultCard}>
-            <Text style={styles.label}>📝 TRADUÇÃO RETORNADA:</Text>
-            <Text style={styles.translatedText}>{translationResult.translatedText}</Text>
-            
-            {translationResult.culturalNotes && (
-              <View style={styles.notesContainer}>
-                <Text style={styles.notesText}>💡 {translationResult.culturalNotes}</Text>
-              </View>
-            )}
+            <View style={styles.resultHeader}>
+              <Text style={styles.headerTitle}>
+                {getFlagEmoji(translationResult.detectedLanguage || 'Auto')} {translationResult.detectedLanguage || 'Auto'} ➔ {getFlagEmoji('Português')} Português
+              </Text>
+              <TouchableOpacity onPress={clearResult} style={styles.clearButton} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                <Text style={styles.clearButtonText}>🗑️ Limpar</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={{ paddingBottom: 20 }} showsVerticalScrollIndicator={true}>
+              <Text style={styles.translatedText}>
+                {translationResult.translatedText || 'Nenhuma tradução retornada.'}
+              </Text>
+
+              {translationResult.originalText && (
+                <>
+                  <View style={styles.divider} />
+                  <Text style={styles.originalLabel}>📝 TEXTO ORIGINAL</Text>
+                  <Text style={styles.originalText}>{translationResult.originalText}</Text>
+                </>
+              )}
+
+              {translationResult.culturalNotes && (
+                <>
+                  <View style={styles.divider} />
+                  <Text style={styles.notesLabel}>💡 OBSERVAÇÕES CULTURAIS</Text>
+                  <Text style={styles.notesText}>{translationResult.culturalNotes}</Text>
+                </>
+              )}
+            </ScrollView>
           </View>
         )}
       </View>
@@ -176,104 +266,68 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { 
-    flex: 1, 
-    backgroundColor: '#000' 
+  container: { flex: 1, backgroundColor: '#000' },
+  center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20, backgroundColor: '#FFF' },
+  permissionText: { textAlign: 'center', marginBottom: 20, color: '#1C1C1E', fontSize: 16 },
+
+  // Layout Flexível
+cameraContainer: {
+    flex: 1,
+    flexGrow: 1,
+    alignSelf: 'stretch',
+    position: 'relative',
+    backgroundColor: '#000',
+    overflow: 'hidden'
   },
-  center: { 
-    flex: 1, 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    padding: 20 
+  camera: {
+    flex: 1,
+    flexGrow: 1,
+    alignSelf: 'stretch',
+    width: '100%',
+    height: '100%'
   },
-  camera: { 
-    flex: 0.6 
-  }, 
-  overlayContainer: { 
-    flex: 1, 
-    backgroundColor: 'rgba(0,0,0,0.3)', 
-    justifyContent: 'center', 
-    alignItems: 'center' 
+
+  overlayContainer: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.15)', justifyContent: 'center', alignItems: 'center', zIndex: 2, elevation: 2 },
+  scanTargetBox: { width: '85%', height: '50%', borderWidth: 2, borderColor: '#007AFF', borderRadius: 12 },
+  overlayInstruction: { color: '#FFF', marginTop: 12, fontWeight: '600', textShadowColor: '#000', textShadowRadius: 2 },
+
+  controlPanel: {
+    flex: 1.2,
+    backgroundColor: '#F9F9FB',
+    borderTopLeftRadius: 32,
+    borderTopRightRadius: 32,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 20
   },
-  scanTargetBox: { 
-    width: '80%', 
-    height: '40%', 
-    borderWidth: 2, 
-    borderColor: '#007AFF', 
-    borderRadius: 12, 
-    backgroundColor: 'transparent' 
-  },
-  overlayInstruction: { 
-    color: '#FFF', 
-    marginTop: 15, 
-    fontWeight: '600', 
-    textShadowColor: '#000', 
-    textShadowOffset: { width: 1, height: 1 }, 
-    textShadowRadius: 3 
-  },
-  controlPanel: { 
-    flex: 0.4, 
-    backgroundColor: '#FFF', 
-    borderTopLeftRadius: 24, 
-    borderTopRightRadius: 24, 
-    padding: 20, 
-    alignItems: 'center' 
-  },
-  button: { 
-    paddingVertical: 15, 
-    borderRadius: 12, 
-    width: '100%', 
-    alignItems: 'center', 
-    marginBottom: 15 
-  },
-  buttonStart: { 
-    backgroundColor: '#007AFF' 
-  },
-  buttonStop: { 
-    backgroundColor: '#FF3B30' 
-  },
-  buttonText: { 
-    color: '#FFF', 
-    fontSize: 16, 
-    fontWeight: 'bold' 
-  },
-  loaderInline: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    marginBottom: 10 
-  },
-  statusText: { 
-    fontSize: 13, 
-    color: '#8E8E93' 
-  },
-  resultCard: { 
-    width: '100%', 
-    backgroundColor: '#F2F2F7', 
-    borderRadius: 12, 
-    padding: 15, 
-    flex: 1 
-  },
-  label: { 
-    fontSize: 11, 
-    fontWeight: 'bold', 
-    color: '#007AFF', 
-    marginBottom: 4 
-  },
-  translatedText: { 
-    fontSize: 16, 
-    fontWeight: '600', 
-    color: '#1C1C1E' 
-  },
-  notesContainer: { 
-    marginTop: 8, 
-    backgroundColor: '#FFF9E6', 
-    padding: 8, 
-    borderRadius: 6, 
-    borderLeftWidth: 3, 
-    borderLeftColor: '#FFCC00' 
-  },
-  notesText: { 
-    fontSize: 13, 
-    color: '#2C2C2E' 
-  }
+
+  buttonRow: { flexDirection: 'row', width: '100%', justifyContent: 'space-between', marginBottom: 12 },
+  button: { paddingVertical: 16, borderRadius: 16, alignItems: 'center', justifyContent: 'center' },
+  buttonMain: { width: '64%' },
+  buttonSecondary: { width: '32%', backgroundColor: '#E5E5EA' },
+  buttonStart: { backgroundColor: '#007AFF' },
+  buttonStop: { backgroundColor: '#FF3B30' },
+  buttonDisabled: { backgroundColor: '#8E8E93' },
+  buttonText: { color: '#FFF', fontSize: 15, fontWeight: 'bold' },
+  buttonTextSecondary: { color: '#1C1C1E', fontSize: 14, fontWeight: '600' },
+
+  loaderInline: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, height: 24 },
+  statusText: { fontSize: 14, color: '#8E8E93', fontWeight: '500' },
+
+  resultCard: { flex: 1, width: '100%', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#E5E5EA', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 3 },
+
+  resultHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: '#F2F2F7' },
+  headerTitle: { fontSize: 14, fontWeight: '700', color: '#1C1C1E' },
+  clearButton: { backgroundColor: '#FF3B3015', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10 },
+  clearButtonText: { fontSize: 12, color: '#FF3B30', fontWeight: '700' },
+
+  translatedText: { fontSize: 24, fontWeight: '800', color: '#007AFF', lineHeight: 32, textAlign: 'center', marginVertical: 10 },
+
+  divider: { height: 1, backgroundColor: '#F2F2F7', marginVertical: 16 },
+  originalLabel: { fontSize: 11, fontWeight: '700', color: '#8E8E93', marginBottom: 6 },
+  originalText: { fontSize: 14, color: '#555', fontStyle: 'italic', lineHeight: 22 },
+
+  notesLabel: { fontSize: 11, fontWeight: '700', color: '#FF9500', marginBottom: 6 },
+  notesText: { fontSize: 14, color: '#2C2C2E', lineHeight: 22 },
+
 });

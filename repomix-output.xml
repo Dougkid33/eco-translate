@@ -1,3 +1,398 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+ecotranslate-backend/
+  src/
+    application/
+      TranslateUseCase.ts
+    domain/
+      entities/
+        Translation.ts
+      ports/
+        IAProviderPort.ts
+    infrastructure/
+      adapters/
+        GeminiAdapter.ts
+      web/
+        TranslationController.ts
+    index.ts
+  .gitignore
+  package.json
+  README.md
+  tsconfig.json
+ecotranslate-mobile/
+  .claude/
+    settings.json
+  .idea/
+    caches/
+      deviceStreaming.xml
+    .gitignore
+    deviceManager.xml
+    ecotranslate-mobile.iml
+    misc.xml
+    modules.xml
+    vcs.xml
+  assets/
+    android-icon-background.png
+    android-icon-foreground.png
+    android-icon-monochrome.png
+    favicon.png
+    icon.png
+    splash-icon.png
+  .gitignore
+  AGENTS.md
+  app.json
+  App.tsx
+  CLAUDE.md
+  index.ts
+  LICENSE
+  package.json
+  tsconfig.json
+.gitignore
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="ecotranslate-backend/src/application/TranslateUseCase.ts">
+import type { IAProviderPort } from '../domain/ports/IAProviderPort';
+import type { Translation } from '../domain/entities/Translation';
+
+export class TranslateUseCase {
+  // Injeção de Dependência: Passamos a porta pelo construtor
+  constructor(private iaProvider: IAProviderPort) {}
+
+  async execute(text: string, targetLanguage: string): Promise<Translation> {
+    if (!text || text.trim() === '') {
+      throw new Error('O texto para tradução não pode estar vazio.');
+    }
+
+    // Executa a tradução através da porta abstrata
+    return await this.iaProvider.translateText(text, targetLanguage);
+  }
+}
+</file>
+
+<file path="ecotranslate-backend/src/domain/entities/Translation.ts">
+export interface Translation {
+    originalText: string;
+    translatedText: string;
+    detectedLanguage: string;
+    targetLanguage: string;
+    culturalNotes?: string; // Se a IA detectar gírias ou expressões locais, ela explica aqui!
+  }
+</file>
+
+<file path="ecotranslate-backend/src/domain/ports/IAProviderPort.ts">
+import type { Translation } from '../entities/Translation';
+
+export interface IAProviderPort {
+  // Quem implementar essa porta DEVE receber o texto e o idioma alvo, e retornar a nossa Entidade
+  translateText(text: string, targetLanguage: string): Promise<Translation>;
+}
+</file>
+
+<file path="ecotranslate-backend/src/infrastructure/adapters/GeminiAdapter.ts">
+// src/infrastructure/adapters/GeminiAdapter.ts
+import { GoogleGenAI } from '@google/genai'; // Corrigido para o novo SDK unificado
+import type { IAProviderPort } from '../../domain/ports/IAProviderPort';
+import type { Translation } from '../../domain/entities/Translation';
+
+export class GeminiAdapter implements IAProviderPort {
+  private ai: GoogleGenAI;
+
+  constructor() {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error('A variável GEMINI_API_KEY não foi encontrada no arquivo .env');
+    }
+    // No novo SDK, passamos um objeto de configuração diretamente
+    this.ai = new GoogleGenAI({ apiKey });
+  }
+
+  async translateText(textOrBase64: string, targetLanguage: string): Promise<Translation> {
+    const isBase64 = textOrBase64.startsWith('data:image') || textOrBase64.length > 1000;
+
+    const prompt = `
+      You are an expert translator and cultural mediator.
+      Analyze the provided ${isBase64 ? 'image' : 'text'}, detect its language, and translate it to "${targetLanguage}".
+      If an image is provided, extract all legible text from it first (OCR) and then translate it.
+      
+      If the text contains idioms, slangs, or cultural expressions, explain them in the "culturalNotes" field in the target language. If not, leave "culturalNotes" empty.
+
+      You MUST return your response matching this JSON schema strictly:
+      {
+        "originalText": "string (the extracted text from the image/source)",
+        "translatedText": "string (the translation)",
+        "detectedLanguage": "string",
+        "targetLanguage": "string",
+        "culturalNotes": "string (optional)"
+      }
+    `;
+
+    try {
+      let contents: any[] = [prompt];
+
+      if (isBase64) {
+        // Separa o cabeçalho do conteúdo se houver
+        const base64Data = textOrBase64.split(',')[1] || textOrBase64;
+        contents.push({
+          inlineData: {
+            data: base64Data,
+            mimeType: 'image/jpeg'
+          }
+        });
+      } else {
+        contents.push(`Text to translate: "${textOrBase64}"`);
+      }
+
+      const response = await this.ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: contents,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const responseText = response.text;
+      if (!responseText) {
+        throw new Error('A IA retornou uma resposta vazia.');
+      }
+      
+      return JSON.parse(responseText);
+    } catch (error) {
+      console.error('Erro ao chamar a API do Gemini:', error);
+      throw new Error('Falha crítica na comunicação com a inteligência artificial.');
+    }
+  }
+}
+</file>
+
+<file path="ecotranslate-backend/src/infrastructure/web/TranslationController.ts">
+// src/infrastructure/web/TranslationController.ts
+import type { Request, Response } from 'express';
+import { TranslateUseCase } from '../../application/TranslateUseCase';
+
+export class TranslationController {
+  constructor(private translateUseCase: TranslateUseCase) {}
+
+  // Usamos uma "arrow function" aqui para o Express não perder o contexto do 'this' na rota
+  handle = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { text, targetLanguage } = req.body;
+
+      if (!text || !targetLanguage) {
+        res.status(400).json({ error: 'Os campos "text" e "targetLanguage" são obrigatórios.' });
+        return;
+      }
+
+      // Executa a ação chamando as regras do core (Application)
+      const result = await this.translateUseCase.execute(text, targetLanguage);
+      
+      res.status(200).json(result);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message || 'Erro interno no servidor.' });
+    }
+  };
+}
+</file>
+
+<file path="ecotranslate-backend/src/index.ts">
+// src/index.ts
+import express from 'express';
+import dotenv from 'dotenv';
+import { GeminiAdapter } from './infrastructure/adapters/GeminiAdapter';
+import { TranslateUseCase } from './application/TranslateUseCase';
+import { TranslationController } from './infrastructure/web/TranslationController';
+
+// 1. Inicializa as variáveis de ambiente do .env
+dotenv.config();
+
+const app = express();
+
+// 👇 Substitua a linha antiga por estas duas linhas abaixo:
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
+// 👆 --------------------------------------------------------
+
+// 2. Montagem do quebra-cabeça Hexagonal (Injeção de Dependência)
+const geminiAdapter = new GeminiAdapter(); // Infra
+const translateUseCase = new TranslateUseCase(geminiAdapter); // Application (Core)
+const translationController = new TranslationController(translateUseCase); // Infra (Web)
+
+// 3. Define a rota POST apontando diretamente para o handler do controlador
+app.post('/api/translate', translationController.handle);
+
+// 4. Inicializa o servidor com o Bun
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`\n🚀 EcoTranslate rodando com Bun na porta ${PORT}`);
+  console.log(`📡 Pronto para receber requisições POST em http://localhost:${PORT}/api/translate\n`);
+});
+</file>
+
+<file path="ecotranslate-backend/.gitignore">
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+_.log
+report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
+
+# dotenv environment variable files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# IntelliJ based IDEs
+.idea
+
+# Finder (MacOS) folder config
+.DS_Store
+</file>
+
+<file path="ecotranslate-backend/package.json">
+{
+  "name": "ecotranslate-backend",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/express": "^5.0.6"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@google/genai": "^2.6.0",
+    "@google/generative-ai": "^0.24.1",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  },
+  "scripts": {
+    "dev": "bun --watch src/index.ts"
+  }
+}
+</file>
+
+<file path="ecotranslate-backend/README.md">
+# ecotranslate-backend
+
+To install dependencies:
+
+```bash
+bun install
+```
+
+To run:
+
+```bash
+bun run index.ts
+```
+
+This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+</file>
+
+<file path="ecotranslate-backend/tsconfig.json">
+{
+  "compilerOptions": {
+    // Environment setup & latest features
+    "lib": ["ESNext"],
+    "target": "ESNext",
+    "module": "Preserve",
+    "moduleDetection": "force",
+    "jsx": "react-jsx",
+    "allowJs": true,
+    "types": ["bun"],
+
+    // Bundler mode
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+
+    // Best practices
+    "strict": true,
+    "skipLibCheck": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // Some stricter flags (disabled by default)
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noPropertyAccessFromIndexSignature": false
+  }
+}
+</file>
+
+<file path="ecotranslate-mobile/.claude/settings.json">
+{
+  "enabledPlugins": {
+    "expo@claude-plugins-official": true
+  }
+}
+</file>
+
+<file path="ecotranslate-mobile/.idea/caches/deviceStreaming.xml">
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="DeviceStreaming">
@@ -580,11 +975,6 @@
           <option name="screenDensity" value="420" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2410" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="32" />
@@ -923,18 +1313,6 @@
           <option name="screenY" value="1840" />
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
-          <option name="api" value="36" />
-          <option name="brand" value="google" />
-          <option name="codename" value="felix" />
-          <option name="id" value="felix" />
-          <option name="labId" value="google" />
-          <option name="manufacturer" value="Google" />
-          <option name="name" value="Pixel Fold" />
-          <option name="screenDensity" value="420" />
-          <option name="screenX" value="2208" />
-          <option name="screenY" value="1840" />
-        </PersistentDeviceSelectionData>
-        <PersistentDeviceSelectionData>
           <option name="api" value="33" />
           <option name="brand" value="google" />
           <option name="codename" value="felix_camera" />
@@ -1006,11 +1384,6 @@
           <option name="screenDensity" value="420" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2424" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="34" />
@@ -1338,11 +1711,6 @@
           <option name="screenDensity" value="390" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2404" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="34" />
@@ -1440,11 +1808,6 @@
           <option name="screenDensity" value="450" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2340" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="36" />
@@ -1458,11 +1821,6 @@
           <option name="screenDensity" value="450" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2340" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="33" />
@@ -1487,18 +1845,6 @@
           <option name="screenDensity" value="450" />
           <option name="screenX" value="1440" />
           <option name="screenY" value="3120" />
-        </PersistentDeviceSelectionData>
-        <PersistentDeviceSelectionData>
-          <option name="api" value="36" />
-          <option name="brand" value="samsung" />
-          <option name="codename" value="q4qksx" />
-          <option name="id" value="q4qksx" />
-          <option name="labId" value="google" />
-          <option name="manufacturer" value="Samsung" />
-          <option name="name" value="Galaxy Z Fold4" />
-          <option name="screenDensity" value="420" />
-          <option name="screenX" value="1812" />
-          <option name="screenY" value="2176" />
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="34" />
@@ -1670,11 +2016,6 @@
           <option name="screenDensity" value="390" />
           <option name="screenX" value="2076" />
           <option name="screenY" value="2152" />
-          <option name="tags">
-            <list>
-              <option value="dda-default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="30" />
@@ -1687,11 +2028,6 @@
           <option name="screenDensity" value="440" />
           <option name="screenX" value="1080" />
           <option name="screenY" value="2340" />
-          <option name="tags">
-            <list>
-              <option value="default" />
-            </list>
-          </option>
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="34" />
@@ -1743,19 +2079,6 @@
         </PersistentDeviceSelectionData>
         <PersistentDeviceSelectionData>
           <option name="api" value="33" />
-          <option name="brand" value="google" />
-          <option name="codename" value="tangorpro" />
-          <option name="formFactor" value="Tablet" />
-          <option name="id" value="tangorpro" />
-          <option name="labId" value="google" />
-          <option name="manufacturer" value="Google" />
-          <option name="name" value="Pixel Tablet" />
-          <option name="screenDensity" value="320" />
-          <option name="screenX" value="1600" />
-          <option name="screenY" value="2560" />
-        </PersistentDeviceSelectionData>
-        <PersistentDeviceSelectionData>
-          <option name="api" value="36" />
           <option name="brand" value="google" />
           <option name="codename" value="tangorpro" />
           <option name="formFactor" value="Tablet" />
@@ -1855,3 +2178,796 @@
     </option>
   </component>
 </project>
+</file>
+
+<file path="ecotranslate-mobile/.idea/.gitignore">
+# Default ignored files
+/shelf/
+/workspace.xml
+</file>
+
+<file path="ecotranslate-mobile/.idea/deviceManager.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DeviceTable">
+    <option name="columnSorters">
+      <list>
+        <ColumnSorterState>
+          <option name="column" value="Name" />
+          <option name="order" value="ASCENDING" />
+        </ColumnSorterState>
+      </list>
+    </option>
+  </component>
+</project>
+</file>
+
+<file path="ecotranslate-mobile/.idea/ecotranslate-mobile.iml">
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$" />
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>
+</file>
+
+<file path="ecotranslate-mobile/.idea/misc.xml">
+<project version="4">
+  <component name="ProjectRootManager">
+    <output url="file://$PROJECT_DIR$/out" />
+  </component>
+</project>
+</file>
+
+<file path="ecotranslate-mobile/.idea/modules.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="ProjectModuleManager">
+    <modules>
+      <module fileurl="file://$PROJECT_DIR$/.idea/ecotranslate-mobile.iml" filepath="$PROJECT_DIR$/.idea/ecotranslate-mobile.iml" />
+    </modules>
+  </component>
+</project>
+</file>
+
+<file path="ecotranslate-mobile/.idea/vcs.xml">
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/.." vcs="Git" />
+  </component>
+</project>
+</file>
+
+<file path="ecotranslate-mobile/.gitignore">
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+</file>
+
+<file path="ecotranslate-mobile/AGENTS.md">
+# Expo HAS CHANGED
+
+Read the exact versioned docs at https://docs.expo.dev/versions/v56.0.0/ before writing any code.
+</file>
+
+<file path="ecotranslate-mobile/app.json">
+{
+  "expo": {
+    "name": "ecotranslate-mobile",
+    "slug": "ecotranslate-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.anonymous.ecotranslatemobile"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "package": "com.anonymous.ecotranslatemobile"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
+</file>
+
+<file path="ecotranslate-mobile/App.tsx">
+// App.tsx
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Dimensions,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import axios from 'axios';
+
+export default function App() {
+  const [permission, requestPermission] = useCameraPermissions();
+
+  const [isScanning, setIsScanning] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState('Inicializando câmera...');
+  const [translationResult, setTranslationResult] = useState<any>(null);
+
+  const [cameraReady, setCameraReady] = useState(false);
+  const [cameraKey, setCameraKey] = useState(0);
+
+  const cameraRef = useRef<CameraView | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadingRef = useRef(false);
+  const cameraReadyRef = useRef(false);
+
+  const backendUrl = 'http://192.168.100.12:3000/api/translate';
+
+  const clearScanInterval = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const stopScanning = useCallback(() => {
+    clearScanInterval();
+
+    loadingRef.current = false;
+
+    setIsScanning(false);
+    setLoading(false);
+    setStatusText(
+      cameraReadyRef.current ? 'Câmera pronta.' : 'Inicializando câmera...'
+    );
+  }, [clearScanInterval]);
+
+  useEffect(() => {
+    if (!permission?.granted) {
+      requestPermission();
+    }
+
+    return () => {
+      clearScanInterval();
+    };
+  }, [permission?.granted, requestPermission, clearScanInterval]);
+
+  const restartCamera = useCallback(() => {
+    clearScanInterval();
+
+    loadingRef.current = false;
+    cameraReadyRef.current = false;
+
+    setIsScanning(false);
+    setLoading(false);
+    setCameraReady(false);
+    setTranslationResult(null);
+    setStatusText('Reinicializando câmera...');
+
+    setCameraKey((previousKey) => previousKey + 1);
+  }, [clearScanInterval]);
+
+  const sendToBackend = useCallback(async (base64Image: string) => {
+    setStatusText('Gemini analisando imagem e traduzindo...');
+
+    try {
+      const response = await axios.post(
+        backendUrl,
+        {
+          text: base64Image,
+          targetLanguage: 'Português',
+        },
+        {
+          timeout: 30000,
+        }
+      );
+
+      if (response.data) {
+        setTranslationResult(response.data);
+      }
+    } catch (error) {
+      console.error('Erro na requisição Axios:', error);
+      setStatusText('Erro de conexão com o servidor.');
+    }
+  }, []);
+
+  const captureFrame = useCallback(async () => {
+    if (!cameraRef.current) {
+      setStatusText('Referência da câmera indisponível.');
+      return;
+    }
+
+    if (!cameraReadyRef.current) {
+      setStatusText('Aguardando a câmera inicializar...');
+      return;
+    }
+
+    if (loadingRef.current) {
+      return;
+    }
+
+    try {
+      loadingRef.current = true;
+
+      setLoading(true);
+      setStatusText('Capturando frame...');
+
+      const photo = await cameraRef.current.takePictureAsync({
+        quality: 0.4,
+        base64: true,
+        skipProcessing: true,
+      });
+
+      if (!photo?.base64) {
+        setStatusText('Nenhuma imagem capturada.');
+        return;
+      }
+
+      await sendToBackend(photo.base64);
+
+      setStatusText('Tradução atualizada.');
+    } catch (error) {
+      console.error('Erro ao capturar/enviar frame:', error);
+      setStatusText('Erro ao capturar imagem.');
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
+    }
+  }, [sendToBackend]);
+
+  const startScanning = useCallback(() => {
+    if (!cameraReadyRef.current) {
+      setStatusText('A câmera ainda está inicializando...');
+      return;
+    }
+
+    setIsScanning(true);
+    setTranslationResult(null);
+    setStatusText('Scanner ativo. Mirando no texto...');
+
+    clearScanInterval();
+
+    captureFrame();
+
+    intervalRef.current = setInterval(() => {
+      captureFrame();
+    }, 5000);
+  }, [captureFrame, clearScanInterval]);
+
+  const toggleScanning = useCallback(() => {
+    if (isScanning) {
+      stopScanning();
+    } else {
+      startScanning();
+    }
+  }, [isScanning, startScanning, stopScanning]);
+
+  if (!permission) {
+    return (
+      <View style={styles.center}>
+        <ActivityIndicator size="large" color="#007AFF" />
+        <Text style={styles.centerText}>Verificando permissão...</Text>
+      </View>
+    );
+  }
+
+  if (!permission.granted) {
+    return (
+      <View style={styles.center}>
+        <Text style={styles.permissionText}>
+          Precisamos da permissão da câmera!
+        </Text>
+
+        <TouchableOpacity style={styles.button} onPress={requestPermission}>
+          <Text style={styles.buttonText}>Liberar Câmera</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <View style={styles.cameraContainer}>
+        <CameraView
+          key={cameraKey}
+          ref={cameraRef}
+          style={styles.camera}
+          facing="back"
+          mode="picture"
+          onCameraReady={() => {
+            console.log('CAMERA READY');
+
+            cameraReadyRef.current = true;
+
+            setCameraReady(true);
+            setStatusText('Câmera pronta.');
+          }}
+          onMountError={(event: any) => {
+            console.log('CAMERA MOUNT ERROR:', event);
+
+            const message =
+              event?.message ||
+              event?.nativeEvent?.message ||
+              JSON.stringify(event);
+
+            cameraReadyRef.current = false;
+
+            setCameraReady(false);
+            setStatusText(`Erro ao inicializar câmera: ${message}`);
+          }}
+        />
+
+        <View pointerEvents="none" style={styles.overlayContainer}>
+          <View style={styles.scanTargetBox} />
+          <Text style={styles.overlayInstruction}>
+            Posicione o texto no quadrado
+          </Text>
+        </View>
+      </View>
+
+      <View style={styles.controlPanel}>
+        <TouchableOpacity
+          style={[
+            styles.button,
+            isScanning ? styles.buttonStop : styles.buttonStart,
+            !cameraReady && styles.buttonDisabled,
+          ]}
+          onPress={toggleScanning}
+          disabled={!cameraReady}
+        >
+          <Text style={styles.buttonText}>
+            {!cameraReady
+              ? 'Inicializando câmera...'
+              : isScanning
+                ? '⏹️ Parar Tradutor'
+                : '🚀 Traduzir em Tempo Real'}
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.button, styles.buttonSecondary]}
+          onPress={restartCamera}
+        >
+          <Text style={styles.buttonText}>🔄 Reiniciar câmera</Text>
+        </TouchableOpacity>
+
+        {(loading || statusText !== '') && (
+          <View style={styles.loaderInline}>
+            {loading && <ActivityIndicator size="small" color="#007AFF" />}
+            <Text style={styles.statusText}> {statusText}</Text>
+          </View>
+        )}
+
+        {translationResult && (
+          <ScrollView
+            style={styles.resultCard}
+            contentContainerStyle={styles.resultCardContent}
+            showsVerticalScrollIndicator={true}
+          >
+            <Text style={styles.translationLabel}>🔮 TRADUÇÃO</Text>
+
+            <Text style={styles.translatedText}>
+              {translationResult.translatedText || 'Nenhuma tradução retornada.'}
+            </Text>
+
+            <View style={styles.divider} />
+
+            <Text style={styles.originalLabel}>📝 TEXTO ORIGINAL</Text>
+
+            <Text style={styles.originalText}>
+              {translationResult.originalText || 'Nenhum texto original retornado.'}
+            </Text>
+
+            {translationResult.detectedLanguage && (
+              <Text style={styles.detectedLanguage}>
+                Idioma detectado: {translationResult.detectedLanguage}
+              </Text>
+            )}
+
+            {translationResult.culturalNotes && (
+              <>
+                <View style={styles.divider} />
+
+                <Text style={styles.notesLabel}>💡 OBSERVAÇÕES</Text>
+
+                <Text style={styles.notesText}>
+                  {translationResult.culturalNotes}
+                </Text>
+              </>
+            )}
+          </ScrollView>
+        )}
+      </View>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+
+  centerText: {
+    marginTop: 12,
+    color: '#1C1C1E',
+  },
+
+  permissionText: {
+    textAlign: 'center',
+    marginBottom: 20,
+    color: '#1C1C1E',
+  },
+
+  cameraContainer: {
+    width: '100%',
+    height: Dimensions.get('window').height * 0.48,
+    backgroundColor: '#000',
+    overflow: 'hidden',
+  },
+
+  camera: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: '#000',
+  },
+
+  overlayContainer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  scanTargetBox: {
+    width: '85%',
+    height: '50%',
+    borderWidth: 2,
+    borderColor: '#007AFF',
+    borderRadius: 12,
+  },
+
+  overlayInstruction: {
+    color: '#FFF',
+    marginTop: 12,
+    fontWeight: '600',
+    textShadowColor: '#000',
+    textShadowRadius: 2,
+  },
+
+  controlPanel: {
+    flex: 1,
+    backgroundColor: '#FFF',
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 20,
+    alignItems: 'center',
+  },
+
+  button: {
+    paddingVertical: 14,
+    borderRadius: 12,
+    width: '100%',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+
+  buttonStart: {
+    backgroundColor: '#007AFF',
+  },
+
+  buttonStop: {
+    backgroundColor: '#FF3B30',
+  },
+
+  buttonDisabled: {
+    backgroundColor: '#8E8E93',
+  },
+
+  buttonSecondary: {
+    backgroundColor: '#5856D6',
+  },
+
+  buttonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: 'bold',
+  },
+
+  loaderInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+
+  statusText: {
+    fontSize: 13,
+    color: '#8E8E93',
+  },
+
+  resultCard: {
+    width: '100%',
+    flex: 1,
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    padding: 14,
+  },
+
+  resultCardContent: {
+    paddingBottom: 32,
+  },
+
+  translationLabel: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: '#007AFF',
+    marginBottom: 8,
+  },
+
+  translatedText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#1C1C1E',
+    lineHeight: 27,
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: '#D1D1D6',
+    marginVertical: 14,
+  },
+
+  originalLabel: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#8E8E93',
+    marginBottom: 6,
+  },
+
+  originalText: {
+    fontSize: 13,
+    color: '#555',
+    lineHeight: 20,
+    fontStyle: 'italic',
+  },
+
+  detectedLanguage: {
+    marginTop: 8,
+    fontSize: 11,
+    color: '#8E8E93',
+  },
+
+  notesLabel: {
+    fontSize: 10,
+    fontWeight: 'bold',
+    color: '#FF9500',
+    marginBottom: 6,
+  },
+
+  notesText: {
+    fontSize: 13,
+    color: '#2C2C2E',
+    lineHeight: 20,
+  },
+});
+</file>
+
+<file path="ecotranslate-mobile/CLAUDE.md">
+@AGENTS.md
+</file>
+
+<file path="ecotranslate-mobile/index.ts">
+import { registerRootComponent } from 'expo';
+
+import App from './App';
+
+// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
+// It also ensures that whether you load the app in Expo Go or in a native build,
+// the environment is set up appropriately
+registerRootComponent(App);
+</file>
+
+<file path="ecotranslate-mobile/LICENSE">
+The MIT License (MIT)
+
+Copyright (c) 2015-present 650 Industries, Inc. (aka Expo)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+</file>
+
+<file path="ecotranslate-mobile/package.json">
+{
+  "name": "ecotranslate-mobile",
+  "version": "1.0.0",
+  "main": "index.ts",
+  "dependencies": {
+    "axios": "^1.16.1",
+    "expo": "~56.0.4",
+    "expo-camera": "~56.0.7",
+    "expo-dev-client": "~56.0.15",
+    "expo-image-picker": "^56.0.13",
+    "expo-status-bar": "~56.0.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-web": "^0.21.2"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "private": true
+}
+</file>
+
+<file path="ecotranslate-mobile/tsconfig.json">
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true
+  }
+}
+</file>
+
+<file path=".gitignore">
+**/node_modules/
+**/.expo/
+**/dist/
+**/.env
+**/*.lock
+**/android/
+**/ios/
+</file>
+
+<file path="README.md">
+<p align="center">
+  <img src="https://img.shields.io/badge/EcoTranslate%20OCR-AI--Powered-007AFF?style=for-the-badge&logo=google-gemini&logoColor=white" alt="Logo Provisório" width="400" />
+</p>
+
+<p align="center">
+  A high-performance, real-time OCR translation mobile ecosystem powered by <b>Bun</b>, <b>Google Gemini 2.5</b>, and <b>React Native</b>, built using <b>Hexagonal Architecture</b>.
+</p>
+
+<p align="center">
+  <a href="https://github.com/bun-community" target="_blank"><img src="https://img.shields.io/badge/Runtime-Bun%20v1.x-fbf0df?style=flat&logo=bun&logoColor=black" alt="Bun Version" /></a>
+  <a href="https://reactnative.dev/" target="_blank"><img src="https://img.shields.io/badge/Framework-React%20Native%20%2F%20Expo-61DAFB?style=flat&logo=react&logoColor=black" alt="React Native" /></a>
+  <a href="https://ai.google.dev/" target="_blank"><img src="https://img.shields.io/badge/AI%20Engine-Gemini%202.5%20Flash-4285F4?style=flat&logo=google-gemini&logoColor=white" alt="Gemini Engine" /></a>
+  <a href="https://github.com/naptha/tesseract.js" target="_blank"><img src="https://img.shields.io/badge/OCR-Tesseract.js%20Local-orange?style=flat" alt="Tesseract OCR" /></a>
+  <img src="https://img.shields.io/badge/Architecture-Hexagonal%20%28Ports%20%26%20Adapters%29-41B883?style=flat" alt="Architecture" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="Package License" />
+</p>
+
+---
+
+## 🎯 Project Purpose & Study Goals
+
+**EcoTranslate OCR** is a project built to bridge the gap between high-speed mobile user experiences and decoupled, bulletproof backend engineering. The app aims to solve the problem of contextual translation of text from the physical world. 
+
+Instead of simple literal translations, it uses local edge OCR to capture frames from a camera stream in real-time, pipelines the raw strings to a decentralized Node/Bun backend, and leverages Generative AI to return **context-aware translations** alongside **cultural and idiomatic notes**.
+
+### 🧠 Core Concepts Evaluated:
+* **Hexagonal Architecture (Ports & Adapters):** Keeping the core business logic completely isolated from third-party tools like Google Gemini SDK, Express, or runtime frameworks.
+* **Agentic Dev Workflow Readiness:** Entirely developed using bleeding-edge tooling (**Bun runtime**), skipping legacy bundling issues and ensuring sub-millisecond execution times.
+* **Asynchronous Mobile Lifecycles:** Managing high-frequency device camera snapshots, handling edge text recognition latency with Tesseract.js, and streamlining payload transfer to remote web APIs.
+
+---
+
+## 📐 Hexagonal Architecture Layout
+
+The backend system is strictly decoupled. If Google Gemini needs to be swapped out for Anthropic's Claude or an offline LLM tomorrow, **zero lines of business logic are changed**.
+
+```text
+src/
+├── domain/
+│   ├── entities/      # Pure business data models (Translation.ts)
+│   └── ports/         # Outbound interface contracts (IAProviderPort.ts)
+├── application/       # Orchestrates the user actions (TranslateUseCase.ts)
+└── infrastructure/
+    ├── adapters/      # Real implementation of the Gemini 2.5 SDK
+    └── web/           # REST Layer entrypoint using Express Controllers
+
+```
+⚙️ Project Setup & InstallationThis project is a Monorepo. You will need Bun installed on your machine.🟢 1. Backend SetupBash# Navigate to backend folder
+$ cd ecotranslate-backend
+
+# Install modern dependencies via Bun
+$ bun install
+Create a .env file inside ecotranslate-backend/:Snippet de códigoGEMINI_API_KEY=your_actual_google_ai_studio_key
+PORT=3000
+📱 2. Mobile SetupBash# Navigate to mobile folder
+$ cd ../ecotranslate-mobile
+
+# Install mobile dependencies
+$ bun install
+⚠️ Development Note: Update the backendUrl variable inside ecotranslate-mobile/App.tsx with your computer's local network IP address (e.g., http://192.168.x.x:3000/api/translate) so your physical device can handshake with the local server.🚀 Running the EcosystemStart the Backend Server (Watch Mode)Bash$cd ecotranslate-backend$ bun dev
+Start the React Native App via ExpoBash$cd ecotranslate-mobile$ bun expo start
+Press w to spin it up in your desktop browser.Use the Expo Go application or setup native USB debugging on your physical Android/iOS device to unlock real-time camera stream OCR capabilities.🛠️ Tech Stack BreakdownLayerTechnologyKey Reason for SelectionRuntime EngineBun v1.xNative TS support, blazingly fast dependency resolution, replaces heavy Webpack setups.Backend FrameworkExpress + TypeScriptLightweight REST routing layer running within our infrastructure adapter.AI ModelGemini 2.5 FlashZero-latency structured JSON processing capability (responseMimeType).Mobile CoreReact Native + ExpoCross-platform runtime executing native mobile viewports without overhead.Client OCR EngineTesseract.jsRuns directly on the device container, offloading computational stress from the API.📄 LicenseThis project is MIT licensed.
+</file>
+
+</files>
