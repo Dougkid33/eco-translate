@@ -5,3 +5,5 @@
 **/*.lock
 **/android/
 **/ios/
+**/gemini/
+**/docs/
