@@ -1,31 +1,39 @@
 // src/index.ts
 import express from 'express';
 import dotenv from 'dotenv';
+import cors from 'cors';
+
 import { GeminiAdapter } from './infrastructure/adapters/GeminiAdapter';
 import { TranslateUseCase } from './application/TranslateUseCase';
 import { TranslationController } from './infrastructure/web/TranslationController';
 
-// 1. Inicializa as variáveis de ambiente do .env
 dotenv.config();
 
 const app = express();
 
-// 👇 Substitua a linha antiga por estas duas linhas abaixo:
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
-// 👆 --------------------------------------------------------
+app.use(cors());
 
-// 2. Montagem do quebra-cabeça Hexagonal (Injeção de Dependência)
-const geminiAdapter = new GeminiAdapter(); // Infra
-const translateUseCase = new TranslateUseCase(geminiAdapter); // Application (Core)
-const translationController = new TranslationController(translateUseCase); // Infra (Web)
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// 3. Define a rota POST apontando diretamente para o handler do controlador
+app.get('/health', (_req, res) => {
+  return res.json({
+    status: 'ok',
+    service: 'ecotranslate-backend',
+  });
+});
+
+const geminiAdapter = new GeminiAdapter();
+const translateUseCase = new TranslateUseCase(geminiAdapter);
+const translationController = new TranslationController(translateUseCase);
+
 app.post('/api/translate', translationController.handle);
 
-// 4. Inicializa o servidor com o Bun
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`\n🚀 EcoTranslate rodando com Bun na porta ${PORT}`);
-  console.log(`📡 Pronto para receber requisições POST em http://localhost:${PORT}/api/translate\n`);
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = '0.0.0.0';
+
+app.listen(PORT, HOST, () => {
+  console.log(`\n🚀 EcoTranslate rodando em http://${HOST}:${PORT}`);
+  console.log(`📡 Health check: /health`);
+  console.log(`📡 Tradução: POST /api/translate\n`);
 });
